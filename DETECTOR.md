@@ -1,5 +1,8 @@
 # Wan-only detector: setting A
 
+This document describes the preserved Wan-only baseline. For the optional
+SAM 2.1 Hiera-Large RGB decoder branch, see [SAM2_RGB.md](docs/SAM2_RGB.md).
+
 This is the first detector configuration discussed for the project. No RGB
 encoder, audio branch, LoRA, reconstruction objective, or real/fake feature
 distribution regularization is enabled.

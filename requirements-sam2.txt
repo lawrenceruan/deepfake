@@ -1,0 +1,6 @@
+# Use a separate environment; do not upgrade an existing baseline environment.
+# The encoder does not need SAM's connected-component CUDA extension.
+# Install with SAM2_BUILD_CUDA=0 pip install -r requirements-sam2.txt
+torch>=2.5.1
+torchvision>=0.20.1
+SAM-2 @ git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4

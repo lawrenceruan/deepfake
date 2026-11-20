@@ -3,13 +3,15 @@
 Video deepfake detection and DSSIM map prediction built on **Wan2.2-TI2V-5B**.
 The current baseline freezes the Wan VAE and backbone, fuses features from
 blocks 9, 19 and 29 with spatial-temporal attention, and trains classification
-and dense map-prediction heads. SAM 2 RGB features are a planned experiment;
-they are not part of this implementation.
+and dense map-prediction heads. An optional frozen SAM 2.1 Hiera-Large encoder
+and pretrained pyramid neck supply RGB features to the map decoder.
 
 - [Detector architecture, preprocessing and training guide](DETECTOR.md)
 - Source: `deepfake/`; detector and preprocessing configurations: `configs/`
 - Tests: `tests/test_*.py`; preprocessing, evaluation and cluster helpers: `tools/`
 - Dropout-0.2 configuration: `configs/wan_only_dropout02_v2.json`
+- [SAM 2.1 RGB branch setup and design](docs/SAM2_RGB.md)
+- RGB configuration: `configs/wan_sam21_large_decoder_v1.json`
 - [Baseline maintenance review](experiments/baseline_review_v2_20261120/README.md)
 
 Datasets, prepared clips, frozen-feature caches, model weights, checkpoints,

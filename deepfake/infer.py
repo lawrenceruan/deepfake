@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from .config import DetectorConfig
 from .backbone import FrozenWanFeatures
-from .model import WanOnlyDetector
+from .model import build_detector, restore_detector
 
 
 def main():
@@ -14,11 +14,13 @@ def main():
     p.add_argument('--detector', required=True)
     p.add_argument('--clip', required=True, help='torch file with video [T,3,H,W] in [0,1]')
     p.add_argument('--output', required=True)
+    p.add_argument('--sam2-checkpoint', help='Override the RGB pretrained checkpoint location')
     a = p.parse_args()
     state = torch.load(a.detector, weights_only=True, map_location='cpu')
     cfg = DetectorConfig(**state['config'])
-    model = WanOnlyDetector(FrozenWanFeatures.from_pretrained(a.checkpoint_dir, a.context, cfg), cfg)
-    model.heads.load_state_dict(state['heads'])
+    model = build_detector(FrozenWanFeatures.from_pretrained(a.checkpoint_dir, a.context, cfg), cfg,
+                           a.sam2_checkpoint or state.get('sam2_checkpoint'))
+    restore_detector(model, state)
     model.heads.cuda()
     model.eval()
     clip = torch.load(a.clip, weights_only=True, map_location='cpu')

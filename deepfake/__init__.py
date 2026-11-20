@@ -1,7 +1,7 @@
-"""Wan-only visual deepfake detection (no RGB or audio branch)."""
+"""Frozen-Wan visual deepfake detection, with an optional SAM RGB map branch."""
 
 from .config import DetectorConfig
-from .model import WanOnlyDetector, DetectorHeads
+from .model import WanOnlyDetector, WanRGBDetector, DetectorHeads, build_detector
 from .losses import detector_loss
 
-__all__ = ['DetectorConfig', 'WanOnlyDetector', 'DetectorHeads', 'detector_loss']
+__all__ = ['DetectorConfig', 'WanOnlyDetector', 'WanRGBDetector', 'DetectorHeads', 'build_detector', 'detector_loss']

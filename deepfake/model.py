@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from .config import DetectorConfig
-from .modules import DepthFusion, SpatialTemporalBlock, MapDecoder, position_encoding
+from .modules import DepthFusion, SpatialTemporalBlock, MapDecoder, RGBMapDecoder, position_encoding
 
 
 class DetectorHeads(nn.Module):
@@ -17,9 +17,12 @@ class DetectorHeads(nn.Module):
             for _ in range(config.attention_blocks)])
         self.classifier = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d),
                                         nn.GELU(), nn.Linear(d, 1))
-        self.decoder = MapDecoder(d, config.decoder_channels)
+        decoder = MapDecoder if config.rgb_branch == 'none' else RGBMapDecoder
+        self.decoder = decoder(d, config.decoder_channels)
 
-    def forward(self, grids, latent_validity, output_size, frame_validity=None):
+    def forward(self, grids, latent_validity, output_size, frame_validity=None, rgb_features=None):
+        if (self.config.rgb_branch == 'none') != (rgb_features is None):
+            raise ValueError('RGB features must be supplied exactly when the RGB decoder is enabled')
         x = self.fusion(grids)
         b, t, h, w, d = x.shape
         valid = latent_validity.to(device=x.device, dtype=torch.bool)
@@ -53,7 +56,11 @@ class DetectorHeads(nn.Module):
             n = int(valid[i].sum())
             frames = int(frame_validity[i].sum())
             grid = x[i:i+1, :n].permute(0, 4, 1, 2, 3)
-            pred = self.decoder(grid, (frames, *output_size[1:]))
+            if rgb_features is None:
+                pred = self.decoder(grid, (frames, *output_size[1:]))
+            else:
+                pred = self.decoder(grid, (frames, *output_size[1:]),
+                                    [f[i:i+1, :frames] for f in rgb_features])
             maps.append(torch.cat([pred, pred.new_zeros(
                 1, output_size[0]-frames, 1, *output_size[1:])], dim=1))
         return {'visual_logit': logit, 'modification_map': torch.cat(maps)}
@@ -68,15 +75,56 @@ class WanOnlyDetector(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        self.extractor.eval()
+        if self.extractor is not None:
+            self.extractor.eval()
         return self
 
     def forward(self, video, frame_validity=None):
+        if self.extractor is None:
+            raise RuntimeError('This detector requires cached Wan features via forward_heads')
         if video.ndim != 5 or video.shape[2] != 3:
             raise ValueError('Expected video [B,T,3,H,W]')
         if frame_validity is None:
             frame_validity = torch.ones(video.shape[:2], dtype=torch.bool, device=video.device)
         with torch.no_grad():
             features, latent_validity = self.extractor(video, frame_validity)
+        return self.forward_heads(features, latent_validity, video, frame_validity)
+
+    def forward_heads(self, features, latent_validity, video, frame_validity):
         return self.heads(features, latent_validity,
                           (video.shape[1], *video.shape[-2:]), frame_validity)
+
+
+class WanRGBDetector(WanOnlyDetector):
+    def __init__(self, extractor, rgb_encoder, config):
+        if config.rgb_branch == 'none':
+            raise ValueError('WanRGBDetector requires an RGB decoder configuration')
+        super().__init__(extractor, config)
+        self.rgb_encoder = rgb_encoder
+
+    def forward_heads(self, features, latent_validity, video, frame_validity):
+        rgb = self.rgb_encoder(video, frame_validity)
+        return self.heads(features, latent_validity,
+                          (video.shape[1], *video.shape[-2:]), frame_validity, rgb)
+
+
+def build_detector(extractor, config, sam2_checkpoint=None, device='cuda'):
+    if config.rgb_branch == 'none':
+        if sam2_checkpoint is not None:
+            raise ValueError('SAM checkpoint supplied for a Wan-only configuration')
+        return WanOnlyDetector(extractor, config)
+    if sam2_checkpoint is None:
+        raise ValueError('RGB decoder requires --sam2-checkpoint')
+    from .sam2_rgb import SAM2RGBEncoder
+    rgb = SAM2RGBEncoder.from_pretrained(sam2_checkpoint, config, device)
+    return WanRGBDetector(extractor, rgb, config)
+
+
+def restore_detector(model, state):
+    """Restore trainable heads and, when enabled, the fine-tuned RGB encoder."""
+    model.heads.load_state_dict(state['heads'], strict=True)
+    if model.config.rgb_branch != 'none':
+        if state.get('sam2_contract') != model.rgb_encoder.contract:
+            raise ValueError('SAM checkpoint/preprocessing contract does not match')
+        if model.config.sam2_trainable:
+            model.rgb_encoder.load_state_dict(state['rgb_encoder'], strict=True)

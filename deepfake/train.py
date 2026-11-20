@@ -1,4 +1,4 @@
-"""Train setting A using prepared face-clip tensors and frozen Wan weights."""
+"""Train Wan detector heads, optionally with a SAM RGB branch and cached Wan features."""
 import argparse
 import json
 from pathlib import Path
@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from .config import DetectorConfig
 from .backbone import FrozenWanFeatures
-from .model import WanOnlyDetector
+from .model import build_detector, restore_detector
 from .data import PreparedClipDataset, collate_clips, audit_splits
 from .losses import detector_loss
 from .checkpointing import commit_epoch, publish_epoch, atomic_json
@@ -17,6 +17,9 @@ def trial_forward(model, batch, feature_cache=None):
     """Cache frozen features in CPU RAM for fixed, unaugmented batch-one clips."""
     if feature_cache is None:
         return model(batch['video'], batch['frame_validity'])
+    if hasattr(feature_cache, 'get_batch'):
+        grids, valid = feature_cache.get_batch(batch)
+        return model.forward_heads(grids, valid, batch['video'], batch['frame_validity'])
     if len(batch['video']) != 1:
         raise ValueError('Feature caching currently requires batch-size 1')
     row = batch['metadata'][0]
@@ -31,8 +34,8 @@ def trial_forward(model, batch, feature_cache=None):
         feature_cache[key] = ([g.detach().cpu() for g in grids],valid.cpu())
     grids, valid = feature_cache[key]
     device=batch['video'].device
-    return model.heads([g.to(device) for g in grids],valid.to(device),
-                       (batch['video'].shape[1],*batch['video'].shape[-2:]),batch['frame_validity'])
+    return model.forward_heads([g.to(device) for g in grids],valid.to(device),
+                               batch['video'],batch['frame_validity'])
 
 
 def classification_metrics(labels, scores, logits=None):
@@ -74,11 +77,18 @@ def main():
     p.add_argument('--selection-metric', choices=['loss', 'accuracy', 'auroc'], default='loss')
     p.add_argument('--preprocessing-config',help='Require this preprocessing fingerprint for both splits')
     p.add_argument('--cache-features',action='store_true',help='Cache frozen features in CPU RAM; batch size 1 and fixed clips only')
+    p.add_argument('--wan-feature-cache', help='Read-only completed disk cache; skips loading the Wan model')
+    p.add_argument('--sam2-checkpoint', help='Official sam2.1_hiera_large.pt for RGB-enabled configs')
+    p.add_argument('--sam2-lr', type=float, default=1e-5, help='Encoder LR if sam2_trainable is enabled')
     a = p.parse_args()
     if a.accumulation < 1 or a.epochs < 1 or a.batch_size < 1:
         p.error('epochs, accumulation and batch-size must be positive')
     if a.cache_features and a.batch_size != 1:
         p.error('--cache-features requires --batch-size 1')
+    if a.wan_feature_cache and (a.batch_size != 1 or a.cache_features):
+        p.error('--wan-feature-cache requires batch size 1 and cannot be combined with --cache-features')
+    if a.sam2_lr <= 0:
+        p.error('--sam2-lr must be positive')
     if not torch.cuda.is_available():
         p.error('CUDA GPU is required for pretrained Wan training')
     random.seed(a.seed)
@@ -94,10 +104,20 @@ def main():
                        shuffle=True, generator=rng, collate_fn=collate_clips)
     val = DataLoader(PreparedClipDataset(a.manifest, 'val', expected_id), batch_size=a.batch_size,
                      collate_fn=collate_clips)
-    extractor = FrozenWanFeatures.from_pretrained(a.checkpoint_dir, a.context, cfg)
-    model = WanOnlyDetector(extractor, cfg)
+    feature_cache = {} if a.cache_features else None
+    if a.wan_feature_cache:
+        from .cached_training import DiskWanFeatureCache
+        feature_cache = DiskWanFeatureCache(a.wan_feature_cache, a.manifest, a.context, cfg)
+        extractor = None
+    else:
+        extractor = FrozenWanFeatures.from_pretrained(a.checkpoint_dir, a.context, cfg)
+    model = build_detector(extractor, cfg, a.sam2_checkpoint)
     model.heads.cuda()
-    opt = torch.optim.AdamW(model.heads.parameters(), lr=a.lr, weight_decay=0.01)
+    groups = [dict(params=list(model.heads.parameters()), lr=a.lr)]
+    if cfg.sam2_trainable:
+        groups.append(dict(params=[p for p in model.rgb_encoder.parameters() if p.requires_grad], lr=a.sam2_lr))
+    trainable_parameters = [p for group in groups for p in group['params']]
+    opt = torch.optim.AdamW(groups, lr=a.lr, weight_decay=0.01)
     start, best = 0, float('inf')
     best_accuracy, best_auroc = -1., -1.
     best_selected = float('inf') if a.selection_metric == 'loss' else -1.
@@ -116,7 +136,9 @@ def main():
         best_accuracy = state.get('best_accuracy', -1.)
         best_auroc = state.get('best_auroc', -1.)
         best_selected = state.get('best_selected', state['best'])
-        model.heads.load_state_dict(state['heads'])
+        if state.get('wan_cache_extraction_id') != getattr(feature_cache, 'extraction_id', None):
+            raise ValueError('Resume Wan cache contract does not match')
+        restore_detector(model, state)
         opt.load_state_dict(state['optimizer'])
         start, best = state['epoch']+1, state['best']
         rng.set_state(state['loader_rng'])
@@ -129,8 +151,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if a.resume:
         publish_epoch(out, state)
-    feature_cache={} if a.cache_features else None
     run_config = dict(vars(a), detector=cfg.to_dict(), gpu=torch.cuda.get_device_name(), torch_version=str(torch.__version__))
+    if cfg.rgb_branch != 'none':
+        run_config['sam2_contract'] = model.rgb_encoder.contract
+        run_config['sam2_parameters'] = sum(p.numel() for p in model.rgb_encoder.parameters())
+    run_config['wan_cache_extraction_id'] = getattr(feature_cache, 'extraction_id', None)
     atomic_json(run_config, out/('resume_config.json' if a.resume else 'run_config.json'))
     for epoch in range(start, a.epochs):
         model.train()
@@ -153,7 +178,7 @@ def main():
             group_size = min(a.accumulation, len(train)-group_start)
             (losses['loss']/group_size).backward()
             if (step+1) % a.accumulation == 0 or step+1 == len(train):
-                torch.nn.utils.clip_grad_norm_(model.heads.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(trainable_parameters, 1.0)
                 opt.step()
                 opt.zero_grad(set_to_none=True)
             if step % 10 == 0:
@@ -222,6 +247,12 @@ def main():
                      context_path=str(Path(a.context).resolve()), manifest=str(Path(a.manifest).resolve()),
                      loader_rng=rng.get_state(), torch_rng=torch.get_rng_state(),
                      cuda_rng=torch.cuda.get_rng_state_all(), python_rng=random.getstate())
+        state['wan_cache_extraction_id'] = getattr(feature_cache, 'extraction_id', None)
+        if cfg.rgb_branch != 'none':
+            state['sam2_checkpoint'] = str(Path(a.sam2_checkpoint).resolve())
+            state['sam2_contract'] = model.rgb_encoder.contract
+            if cfg.sam2_trainable:
+                state['rgb_encoder'] = model.rgb_encoder.state_dict()
         commit_epoch(out, state)
         print(metrics, flush=True)
 

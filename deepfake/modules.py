@@ -109,3 +109,35 @@ class MapDecoder(nn.Module):
         logits = F.interpolate(logits[:, 0].reshape(b*t, 1, *logits.shape[-2:]),
                                size=(h, w), mode='bilinear', align_corners=False)
         return logits.reshape(b, t, 1, h, w).sigmoid()
+
+
+class RGBMapDecoder(MapDecoder):
+    """Frame-aligned SAM skips at /16,/8,/4; Wan carries temporal context."""
+    def __init__(self, dim, channels=64):
+        super().__init__(dim, channels)
+        self.rgb_adapters = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(256, c, 1), nn.GroupNorm(math.gcd(c, 8), c), nn.GELU())
+            for c in (channels, channels, channels//2)])
+
+    def forward(self, grid, output_size, rgb_features):
+        t, h, w = output_size
+        if len(rgb_features) != 3:
+            raise ValueError('Expected fine/middle/coarse RGB pyramid')
+        # All RGB levels retain every valid frame. Unlike the Wan-only decoder,
+        # restore time before the first spatial stage rather than the last.
+        x = self.restore_time(self.context(grid), t)
+        for stage, adapter, rgb, divisor in zip(self.stages, self.rgb_adapters,
+                                                reversed(rgb_features), (16,8,4)):
+            b, c, _, _, _ = x.shape
+            if rgb.ndim != 5 or rgb.shape[:3] != (b,t,256):
+                raise ValueError('RGB pyramid must have shape [B,T,256,H,W]')
+            size = (max(1,h//divisor), max(1,w//divisor))
+            rgb = F.interpolate(rgb.flatten(0,1), size=size, mode='bilinear', align_corners=False)
+            skip = adapter(rgb).reshape(b,t,c,*size).permute(0,2,1,3,4)
+            frames = x.permute(0,2,1,3,4).reshape(b*t,c,*x.shape[-2:])
+            frames = F.interpolate(frames, size=size, mode='bilinear', align_corners=False)
+            x = frames.reshape(b,t,c,*size).permute(0,2,1,3,4) + skip
+            x = stage(x, size)
+        logits = self.output(x)[:,0].reshape(b*t,1,*x.shape[-2:])
+        logits = F.interpolate(logits, size=(h,w), mode='bilinear', align_corners=False)
+        return logits.reshape(b,t,1,h,w).sigmoid()
