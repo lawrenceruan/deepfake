@@ -414,6 +414,7 @@ class WanModel(ModelMixin, ConfigMixin):
         context,
         seq_len,
         y=None,
+        feature_layers=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -433,7 +434,17 @@ class WanModel(ModelMixin, ConfigMixin):
         Returns:
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
+
+        If feature_layers is provided, return unpooled block outputs with
+        grid_sizes and seq_lens, stopping before the generation output head.
+        Layer indices are zero-based. The default generation path is unchanged.
         """
+        if feature_layers is not None:
+            feature_layers = tuple(feature_layers)
+            if (not feature_layers or len(set(feature_layers)) != len(feature_layers)
+                    or any(i < 0 or i >= len(self.blocks) for i in feature_layers)):
+                raise ValueError('feature_layers must contain unique valid block indices')
+            captured = {}
         if self.model_type == 'i2v':
             assert y is not None
         # params
@@ -458,7 +469,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # time embeddings
         if t.dim() == 1:
-            t = t.expand(t.size(0), seq_len)
+            t = t[:, None].expand(t.size(0), seq_len)
         with torch.amp.autocast('cuda', dtype=torch.float32):
             bt = t.size(0)
             t = t.flatten()
@@ -486,8 +497,15 @@ class WanModel(ModelMixin, ConfigMixin):
             context=context,
             context_lens=context_lens)
 
-        for block in self.blocks:
+        for index, block in enumerate(self.blocks):
             x = block(x, **kwargs)
+            if feature_layers is not None and index in feature_layers:
+                captured[index] = x
+                if index == max(feature_layers):
+                    return dict(
+                        hidden_states=[captured[i] for i in feature_layers],
+                        grid_sizes=grid_sizes,
+                        seq_lens=seq_lens)
 
         # head
         x = self.head(x, e)

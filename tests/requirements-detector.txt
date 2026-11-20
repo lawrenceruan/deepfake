@@ -1,0 +1,5 @@
+# CPU unit tests only. Full checkpoint execution uses upstream requirements.txt.
+torch>=2.4
+diffusers>=0.31
+easydict
+pytest>=8

@@ -5,3 +5,63 @@ tmp_examples*
 new_checkpoint*
 batch_test*
 nohup*
+
+# Local detector data, pretrained weights, and training outputs
+.venv/
+.pytest_cache/
+checkpoints/
+data/
+runs/
+*.pt
+*.pth
+*.safetensors
+
+# Local experiment archives: raw-data fallback copies and source snapshots
+/experiments/**/*.tar
+/experiments/**/*.tar.gz
+
+# Dataset copies, derived clips, frozen features, and model artifacts
+datasets/
+raw/
+processed/
+preprocessed/
+features/
+feature_cache/
+weights/
+models/
+*.ckpt
+*.bin
+*.onnx
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Local experiment outputs/manifests stay on disk; publish only scripts/docs.
+/experiments/**
+!/experiments/**/
+!/experiments/**/*.py
+!/experiments/**/*.sbatch
+!/experiments/**/README.md
+!/experiments/**/dropout02.json
+
+# Local environments, logs and credentials
+venv/
+.env
+.env.*
+!.env.example
+.kaggle/
+kaggle.json
+*.pem
+*.key
+*.log
+*.egg-info/
+build/
+dist/

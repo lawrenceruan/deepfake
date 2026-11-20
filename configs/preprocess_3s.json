@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "segment_duration_s": 3.0,
+  "sampling_fps": 8.0,
+  "size": 256,
+  "temporal_padding": "repeat_last_invalid",
+  "map_convention": "rgb_mean_half_dssim_gaussian11_sigma1.5",
+  "endpoint_policy": "adjacent_full_windows_share_endpoint",
+  "color_space": "RGB",
+  "pixel_range": "0_1"
+}

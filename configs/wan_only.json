@@ -1,0 +1,14 @@
+{
+  "feature_layers": [9, 19, 29],
+  "backbone_dim": 3072,
+  "hidden_dim": 256,
+  "attention_heads": 8,
+  "attention_blocks": 2,
+  "mlp_ratio": 4,
+  "dropout": 0.0,
+  "decoder_channels": 64,
+  "probe_sigma": 0.0,
+  "probe_seed": 1234,
+  "num_train_timesteps": 1000,
+  "map_loss_weight": 1.0
+}

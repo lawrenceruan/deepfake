@@ -1,4 +1,32 @@
-# Wan2.2
+# deepfake
+
+Video deepfake detection and DSSIM map prediction built on **Wan2.2-TI2V-5B**.
+The current baseline freezes the Wan VAE and backbone, fuses features from
+blocks 9, 19 and 29 with spatial-temporal attention, and trains classification
+and dense map-prediction heads. SAM 2 RGB features are a planned experiment;
+they are not part of this implementation.
+
+- [Detector architecture, preprocessing and training guide](DETECTOR.md)
+- Source: `deepfake/`; detector and preprocessing configurations: `configs/`
+- Tests: `tests/test_*.py`; preprocessing, evaluation and cluster helpers: `tools/`
+- Dropout-0.2 configuration: `configs/wan_only_dropout02_v2.json`
+- [Baseline maintenance review](experiments/baseline_review_v2_20261120/README.md)
+
+Datasets, prepared clips, frozen-feature caches, model weights, checkpoints,
+local manifests and run outputs are intentionally excluded. Obtain the required
+datasets and pretrained weights separately, following their access terms.
+The cluster scripts and historical experiment notes contain environment-specific
+paths; adapt those paths before running them elsewhere. Local experiment report
+links refer to artifacts that are not distributed in this repository.
+
+The detector revision passed 39 CPU regression tests and loaded existing dropout
+checkpoints successfully. See `DETECTOR.md` for dependencies and limitations.
+The project retains the upstream Apache-2.0 license in [LICENSE.txt](LICENSE.txt).
+The original Wan documentation and attribution follow below.
+
+---
+
+# Wan2.2 (upstream documentation)
 
 <p align="center">
     <img src="assets/logo.png" width="400"/>
