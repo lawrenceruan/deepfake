@@ -1,4 +1,4 @@
-"""Train Wan detector heads, optionally with a SAM RGB branch and cached Wan features."""
+"""Train Wan detector heads, optionally with a frozen VideoMAE or SAM RGB branch and cached Wan features."""
 import argparse
 import json
 from pathlib import Path
@@ -78,6 +78,7 @@ def main():
     p.add_argument('--preprocessing-config',help='Require this preprocessing fingerprint for both splits')
     p.add_argument('--cache-features',action='store_true',help='Cache frozen features in CPU RAM; batch size 1 and fixed clips only')
     p.add_argument('--wan-feature-cache', help='Read-only completed disk cache; skips loading the Wan model')
+    p.add_argument('--videomae-checkpoint', help='Local VideoMAE-B pretrained directory for RGB-enabled configs')
     p.add_argument('--sam2-checkpoint', help='Official sam2.1_hiera_large.pt for RGB-enabled configs')
     p.add_argument('--sam2-lr', type=float, default=1e-5, help='Encoder LR if sam2_trainable is enabled')
     a = p.parse_args()
@@ -111,7 +112,7 @@ def main():
         extractor = None
     else:
         extractor = FrozenWanFeatures.from_pretrained(a.checkpoint_dir, a.context, cfg)
-    model = build_detector(extractor, cfg, a.sam2_checkpoint)
+    model = build_detector(extractor, cfg, a.sam2_checkpoint, videomae_checkpoint=a.videomae_checkpoint)
     model.heads.cuda()
     groups = [dict(params=list(model.heads.parameters()), lr=a.lr)]
     if cfg.sam2_trainable:
@@ -153,8 +154,9 @@ def main():
         publish_epoch(out, state)
     run_config = dict(vars(a), detector=cfg.to_dict(), gpu=torch.cuda.get_device_name(), torch_version=str(torch.__version__))
     if cfg.rgb_branch != 'none':
-        run_config['sam2_contract'] = model.rgb_encoder.contract
-        run_config['sam2_parameters'] = sum(p.numel() for p in model.rgb_encoder.parameters())
+        prefix = 'videomae' if cfg.rgb_branch == 'videomae_base_decoder' else 'sam2'
+        run_config[prefix+'_contract'] = model.rgb_encoder.contract
+        run_config[prefix+'_parameters'] = sum(p.numel() for p in model.rgb_encoder.parameters())
     run_config['wan_cache_extraction_id'] = getattr(feature_cache, 'extraction_id', None)
     atomic_json(run_config, out/('resume_config.json' if a.resume else 'run_config.json'))
     for epoch in range(start, a.epochs):
@@ -249,8 +251,10 @@ def main():
                      cuda_rng=torch.cuda.get_rng_state_all(), python_rng=random.getstate())
         state['wan_cache_extraction_id'] = getattr(feature_cache, 'extraction_id', None)
         if cfg.rgb_branch != 'none':
-            state['sam2_checkpoint'] = str(Path(a.sam2_checkpoint).resolve())
-            state['sam2_contract'] = model.rgb_encoder.contract
+            prefix = 'videomae' if cfg.rgb_branch == 'videomae_base_decoder' else 'sam2'
+            checkpoint = a.videomae_checkpoint if prefix == 'videomae' else a.sam2_checkpoint
+            state[prefix+'_checkpoint'] = str(Path(checkpoint).resolve())
+            state[prefix+'_contract'] = model.rgb_encoder.contract
             if cfg.sam2_trainable:
                 state['rgb_encoder'] = model.rgb_encoder.state_dict()
         commit_epoch(out, state)

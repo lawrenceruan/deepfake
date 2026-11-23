@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from .config import DetectorConfig
-from .modules import DepthFusion, SpatialTemporalBlock, MapDecoder, RGBMapDecoder, position_encoding
+from .modules import DepthFusion, SpatialTemporalBlock, MapDecoder, RGBMapDecoder, VideoMAEMapDecoder, position_encoding
 
 
 class DetectorHeads(nn.Module):
@@ -17,7 +17,8 @@ class DetectorHeads(nn.Module):
             for _ in range(config.attention_blocks)])
         self.classifier = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d),
                                         nn.GELU(), nn.Linear(d, 1))
-        decoder = MapDecoder if config.rgb_branch == 'none' else RGBMapDecoder
+        decoder = {'none': MapDecoder, 'sam2.1_hiera_large_decoder': RGBMapDecoder,
+                   'videomae_base_decoder': VideoMAEMapDecoder}[config.rgb_branch]
         self.decoder = decoder(d, config.decoder_channels)
 
     def forward(self, grids, latent_validity, output_size, frame_validity=None, rgb_features=None):
@@ -59,8 +60,9 @@ class DetectorHeads(nn.Module):
             if rgb_features is None:
                 pred = self.decoder(grid, (frames, *output_size[1:]))
             else:
+                rgb_frames = (frames+1)//2 if self.config.rgb_branch == 'videomae_base_decoder' else frames
                 pred = self.decoder(grid, (frames, *output_size[1:]),
-                                    [f[i:i+1, :frames] for f in rgb_features])
+                                    [f[i:i+1, :rgb_frames] for f in rgb_features])
             maps.append(torch.cat([pred, pred.new_zeros(
                 1, output_size[0]-frames, 1, *output_size[1:])], dim=1))
         return {'visual_logit': logit, 'modification_map': torch.cat(maps)}
@@ -108,11 +110,19 @@ class WanRGBDetector(WanOnlyDetector):
                           (video.shape[1], *video.shape[-2:]), frame_validity, rgb)
 
 
-def build_detector(extractor, config, sam2_checkpoint=None, device='cuda'):
+def build_detector(extractor, config, sam2_checkpoint=None, device='cuda', videomae_checkpoint=None):
     if config.rgb_branch == 'none':
-        if sam2_checkpoint is not None:
-            raise ValueError('SAM checkpoint supplied for a Wan-only configuration')
+        if sam2_checkpoint is not None or videomae_checkpoint is not None:
+            raise ValueError('RGB checkpoint supplied for a Wan-only configuration')
         return WanOnlyDetector(extractor, config)
+    if config.rgb_branch == 'videomae_base_decoder':
+        if videomae_checkpoint is None or sam2_checkpoint is not None:
+            raise ValueError('VideoMAE branch requires only --videomae-checkpoint')
+        from .videomae_rgb import VideoMAERGBEncoder
+        rgb = VideoMAERGBEncoder.from_pretrained(videomae_checkpoint, config, device)
+        return WanRGBDetector(extractor, rgb, config)
+    if videomae_checkpoint is not None:
+        raise ValueError('VideoMAE checkpoint supplied for a SAM configuration')
     if sam2_checkpoint is None:
         raise ValueError('RGB decoder requires --sam2-checkpoint')
     from .sam2_rgb import SAM2RGBEncoder
@@ -124,7 +134,8 @@ def restore_detector(model, state):
     """Restore trainable heads and, when enabled, the fine-tuned RGB encoder."""
     model.heads.load_state_dict(state['heads'], strict=True)
     if model.config.rgb_branch != 'none':
-        if state.get('sam2_contract') != model.rgb_encoder.contract:
-            raise ValueError('SAM checkpoint/preprocessing contract does not match')
+        key = 'videomae_contract' if model.config.rgb_branch == 'videomae_base_decoder' else 'sam2_contract'
+        if state.get(key) != model.rgb_encoder.contract:
+            raise ValueError('RGB checkpoint/preprocessing contract does not match')
         if model.config.sam2_trainable:
             model.rgb_encoder.load_state_dict(state['rgb_encoder'], strict=True)

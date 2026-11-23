@@ -1,0 +1,4 @@
+# Use with the existing torch 2.5.1 / torchvision 0.20.1 training environment.
+transformers==4.51.3
+huggingface-hub==0.36.2
+safetensors>=0.4.3

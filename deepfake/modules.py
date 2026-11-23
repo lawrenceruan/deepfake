@@ -141,3 +141,53 @@ class RGBMapDecoder(MapDecoder):
         logits = self.output(x)[:,0].reshape(b*t,1,*x.shape[-2:])
         logits = F.interpolate(logits, size=(h,w), mode='bilinear', align_corners=False)
         return logits.reshape(b,t,1,h,w).sigmoid()
+
+
+class VideoMAEMapDecoder(MapDecoder):
+    """Adapt one compact VideoMAE grid, then resize at each decoder stage."""
+    def __init__(self, dim, channels=64):
+        super().__init__(dim, channels)
+        self.rgb_adapters = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(768,c,1), nn.GroupNorm(math.gcd(c,8),c), nn.GELU())
+            for c in (channels,channels,channels//2)])
+
+    @staticmethod
+    def restore_rgb_time(x, frames):
+        if x.shape[2] != (frames+1)//2:
+            raise ValueError('VideoMAE grid does not match valid frame length')
+        # Centers of frame pairs: .5,2.5,... . A duplicated final frame has
+        # its center at its actual frame index, not half a frame later.
+        centers = torch.arange(x.shape[2],device=x.device,dtype=torch.float32)*2+.5
+        if frames % 2:
+            centers[-1] = frames-1
+        positions = torch.arange(frames,device=x.device,dtype=torch.float32)
+        hi = torch.searchsorted(centers,positions).clamp(max=len(centers)-1)
+        lo = (hi-1).clamp(min=0)
+        alpha = ((positions-centers[lo])/(centers[hi]-centers[lo]).clamp(min=1e-6)).clamp(0,1)
+        alpha = alpha[None,None,:,None,None].to(x.dtype)
+        return x[:,:,lo]*(1-alpha)+x[:,:,hi]*alpha
+
+    def forward(self, grid, output_size, rgb_features):
+        t,h,w = output_size
+        if len(rgb_features) != 1:
+            raise ValueError('Expected a single unpooled VideoMAE feature grid')
+        rgb = rgb_features[0]
+        b = grid.shape[0]
+        if rgb.ndim != 5 or rgb.shape[:3] != (b,(t+1)//2,768):
+            raise ValueError('Expected VideoMAE [B,ceil(T/2),768,H,W]')
+        x = self.restore_time(self.context(grid),t)
+        for stage,adapter,divisor in zip(self.stages,self.rgb_adapters,(16,8,4)):
+            size = (max(1,h//divisor),max(1,w//divisor))
+            skip = adapter(rgb.flatten(0,1))
+            c = skip.shape[1]
+            skip = skip.reshape(b,rgb.shape[1],c,*skip.shape[-2:]).permute(0,2,1,3,4)
+            skip = self.restore_rgb_time(skip,t).permute(0,2,1,3,4).flatten(0,1)
+            skip = F.interpolate(skip,size=size,mode='bilinear',align_corners=False)
+            skip = skip.reshape(b,t,c,*size).permute(0,2,1,3,4)
+            x = F.interpolate(x.permute(0,2,1,3,4).flatten(0,1),size=size,
+                              mode='bilinear',align_corners=False)
+            x = x.reshape(b,t,c,*size).permute(0,2,1,3,4)
+            x = stage(x+skip,size)
+        logits = self.output(x)[:,0].reshape(b*t,1,*x.shape[-2:])
+        logits = F.interpolate(logits,size=(h,w),mode='bilinear',align_corners=False)
+        return logits.reshape(b,t,1,h,w).sigmoid()

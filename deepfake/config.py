@@ -20,16 +20,19 @@ class DetectorConfig:
     sam2_image_size: int = 1024
     sam2_frame_batch_size: int = 1
     sam2_trainable: bool = False
+    videomae_image_size: int = 256
 
     def __post_init__(self):
         object.__setattr__(self, "feature_layers", tuple(self.feature_layers))
-        if self.rgb_branch not in ('none', 'sam2.1_hiera_large_decoder'):
+        if self.rgb_branch not in ('none', 'sam2.1_hiera_large_decoder', 'videomae_base_decoder'):
             raise ValueError('Unknown RGB branch')
+        if self.videomae_image_size < 16 or self.videomae_image_size % 16:
+            raise ValueError('VideoMAE image size must be divisible by 16')
         if self.sam2_image_size < 64 or self.sam2_image_size % 32:
             raise ValueError('SAM image size must be >=64 and divisible by 32')
         if self.sam2_frame_batch_size < 1 or not isinstance(self.sam2_trainable, bool):
             raise ValueError('Invalid SAM frame batch size/trainable setting')
-        if self.rgb_branch == 'none' and self.sam2_trainable:
+        if self.rgb_branch != 'sam2.1_hiera_large_decoder' and self.sam2_trainable:
             raise ValueError('Cannot train an absent RGB encoder')
         if self.attention_heads < 1 or self.backbone_dim < 1 or self.mlp_ratio < 1 or self.num_train_timesteps < 1:
             raise ValueError("Head count, dimensions, ratio and timesteps must be positive")

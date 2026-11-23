@@ -15,6 +15,7 @@ def main():
     p.add_argument('--run',type=Path,required=True)
     p.add_argument('--checkpoint', choices=['best.pt','last.pt','best_accuracy.pt','best_auroc.pt'], default='best.pt')
     p.add_argument('--output', type=Path, help='Separate report directory; required for non-default checkpoints')
+    p.add_argument('--videomae-checkpoint', help='Override the VideoMAE pretrained directory')
     p.add_argument('--sam2-checkpoint', help='Override the RGB checkpoint location')
     a=p.parse_args()
     if a.checkpoint != 'best.pt' and a.output is None:
@@ -40,7 +41,8 @@ def main():
     for row in errors:
         selected.add(row['sample_id']);reasons[row['sample_id']]='most confident classification error'
     model=build_detector(FrozenWanFeatures.from_pretrained(state['checkpoint_dir'],state['context_path'],cfg),cfg,
-                         a.sam2_checkpoint or state.get('sam2_checkpoint'))
+                         a.sam2_checkpoint or state.get('sam2_checkpoint'),
+                         videomae_checkpoint=a.videomae_checkpoint or state.get('videomae_checkpoint'))
     restore_detector(model,state);model.heads.cuda();model.eval()
     all_rows=[json.loads(s) for s in (Path(state['manifest']).parent/'all_prepared_manifest.jsonl').read_text().splitlines()]
     references={r['pair_id']:r for r in all_rows if r['visual_label']==0}
@@ -82,7 +84,7 @@ def main():
     (report/'verified_evaluation.json').write_text(json.dumps(summary,indent=2)+'\n')
     (report/'verified_predictions.json').write_text(json.dumps(results,indent=2)+'\n')
     torch.save(dict(summary=summary,examples=visuals),report/'visual_examples.pt')
-    export_keys=('heads','config','epoch','checkpoint_dir','context_path','manifest','sam2_checkpoint','sam2_contract','rgb_encoder')
+    export_keys=('heads','config','epoch','checkpoint_dir','context_path','manifest','sam2_checkpoint','sam2_contract','rgb_encoder','videomae_checkpoint','videomae_contract')
     torch.save({k:state[k] for k in export_keys if k in state},report/('detector_'+a.checkpoint))
     print(json.dumps(summary),flush=True)
 

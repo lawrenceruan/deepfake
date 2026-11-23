@@ -1,17 +1,22 @@
 # deepfake
 
 Video deepfake detection and DSSIM map prediction built on **Wan2.2-TI2V-5B**.
-The current baseline freezes the Wan VAE and backbone, fuses features from
-blocks 9, 19 and 29 with spatial-temporal attention, and trains classification
-and dense map-prediction heads. An optional frozen SAM 2.1 Hiera-Large encoder
-and pretrained pyramid neck supply RGB features to the map decoder.
+This branch records the frozen VideoMAE-B + frozen Wan baseline. Wan features from
+blocks 9, 19 and 29 feed spatial-temporal attention and the real/fake classifier.
+VideoMAE features enter the DSSIM decoder. Training updates the feature adapters,
+attention blocks and output heads.
+
+Use `--config configs/wan_videomae_base_decoder_v1.json` with
+`--videomae-checkpoint /path/to/local/videomae-base` when running `python -m deepfake.train`.
+See the [VideoMAE setup and feature specification](docs/VIDEOMAE_RGB.md) and
+[RGB dependencies](requirements-videomae.txt).
 
 - [Detector architecture, preprocessing and training guide](DETECTOR.md)
 - Source: `deepfake/`; detector and preprocessing configurations: `configs/`
 - Tests: `tests/test_*.py`; preprocessing, evaluation and cluster helpers: `tools/`
 - Dropout-0.2 configuration: `configs/wan_only_dropout02_v2.json`
 - [SAM 2.1 RGB branch setup and design](docs/SAM2_RGB.md)
-- RGB configuration: `configs/wan_sam21_large_decoder_v1.json`
+- Historical SAM configuration: `configs/wan_sam21_large_decoder_v1.json`
 - [Baseline maintenance review](experiments/baseline_review_v2_20261120/README.md)
 
 Datasets, prepared clips, frozen-feature caches, model weights, checkpoints,
